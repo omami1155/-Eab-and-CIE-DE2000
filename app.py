@@ -83,7 +83,7 @@ def delta_e_00(L1, a1, b1, L2, a2, b2, kL=1, kC=1, kH=1):
 st.set_page_config(page_title="ΔE Calculator", page_icon="🎨", layout="wide")
 
 st.title("CIELAB 色差計算アプリ")
-st.write("2組の L*, a*, b* から ΔE*ab（CIE76）と CIEDE2000（ΔE00）を計算します。")
+st.write("2組の L*, a*, b* から ΔE*ab（CIE76）と ΔE00（CIEDE2000）を計算します。")
 
 with st.form("lab_form"):
     col1, col2 = st.columns(2)
