@@ -107,7 +107,7 @@ def calc_row(row):
 
 
 def load_csv(uploaded_file):
-    # 文字コードの違いに少し強くしておく
+    """文字コードの違いに少し強くする"""
     encodings = ["utf-8-sig", "utf-8", "cp932"]
     for enc in encodings:
         try:
@@ -118,9 +118,16 @@ def load_csv(uploaded_file):
     raise ValueError("CSVを読み込めませんでした。UTF-8 または CP932 のCSVを確認してください。")
 
 
+def format_stat(value):
+    """表示用フォーマット"""
+    if pd.isna(value):
+        return "-"
+    return f"{value:.4f}"
+
+
 st.set_page_config(page_title="ΔE Calculator CSV", page_icon="🎨", layout="wide")
 
-st.title("色差(CIE76,CIEDE2000)")
+st.title("色差一括計算（CSV対応）")
 st.write("CSVを読み込んで、ΔE*ab（CIE76）と ΔE00（CIEDE2000）を一括計算します。")
 
 st.subheader("必要な列名")
@@ -128,10 +135,27 @@ st.code("L1*, a1*, b1*, L2*, a2*, b2*")
 
 with st.expander("CSVの例"):
     sample_df = pd.DataFrame([
-        {"ID": "sample1", "L1*": 50.0000, "a1*": 2.6772, "b1*": -79.7751, "L2*": 50.0000, "a2*": 0.0000, "b2*": -82.7485},
-        {"ID": "sample2", "L1*": 50.0000, "a1*": 3.1571, "b1*": -77.2803, "L2*": 50.0000, "a2*": 0.0000, "b2*": -82.7485},
+        {
+            "ID": "sample1",
+            "L1*": 50.0000,
+            "a1*": 2.6772,
+            "b1*": -79.7751,
+            "L2*": 50.0000,
+            "a2*": 0.0000,
+            "b2*": -82.7485,
+        },
+        {
+            "ID": "sample2",
+            "L1*": 50.0000,
+            "a1*": 3.1571,
+            "b1*": -77.2803,
+            "L2*": 50.0000,
+            "a2*": 0.0000,
+            "b2*": -82.7485,
+        },
     ])
     st.dataframe(sample_df, use_container_width=True)
+
     sample_csv = sample_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "サンプルCSVをダウンロード",
@@ -173,11 +197,22 @@ if uploaded_file is not None:
                 valid_de00 = result_df["ΔE00 (CIEDE2000)"].dropna()
                 valid_de76 = result_df["ΔE*ab (CIE76)"].dropna()
 
-                c1, c2, c3, c4 = st.columns(4)
+                st.subheader("概要")
+
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
                 c1.metric("計算成功件数", int((result_df["status"] == "OK").sum()))
-                c2.metric("ΔE00 平均", f"{valid_de00.mean():.4f}" if len(valid_de00) else "-")
-                c3.metric("ΔE00 最小", f"{valid_de00.min():.4f}" if len(valid_de00) else "-")
-                c4.metric("ΔE00 最大", f"{valid_de00.max():.4f}" if len(valid_de00) else "-")
+                c2.metric("ΔE00 平均", format_stat(valid_de00.mean()))
+                c3.metric("ΔE00 最小", format_stat(valid_de00.min()))
+                c4.metric("ΔE00 最大", format_stat(valid_de00.max()))
+                c5.metric("ΔE00 中央値", format_stat(valid_de00.median()))
+                c6.metric("ΔE00 SD", format_stat(valid_de00.std()))
+
+                c7, c8, c9, c10, c11 = st.columns(5)
+                c7.metric("ΔE*ab 平均", format_stat(valid_de76.mean()))
+                c8.metric("ΔE*ab 最小", format_stat(valid_de76.min()))
+                c9.metric("ΔE*ab 最大", format_stat(valid_de76.max()))
+                c10.metric("ΔE*ab 中央値", format_stat(valid_de76.median()))
+                c11.metric("ΔE*ab SD", format_stat(valid_de76.std()))
 
                 csv_result = result_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
@@ -186,6 +221,8 @@ if uploaded_file is not None:
                     file_name="delta_e_results.csv",
                     mime="text/csv",
                 )
+
+                st.caption("SD は標本標準偏差です。計算対象が1件のみの場合、SD は表示されません。")
 
     except Exception as e:
         st.error(f"読み込みエラー: {e}")
