@@ -185,7 +185,7 @@ if uploaded_file is not None:
         if missing_cols:
             st.error(f"必要な列が不足しています: {', '.join(missing_cols)}")
         else:
-            if st.button("一括計算", type="primary"):
+            if st.button("計算!!", type="primary"):
                 result_df = edited_df.copy()
                 calc_results = result_df.apply(calc_row, axis=1)
                 result_df = pd.concat([result_df, calc_results], axis=1)
