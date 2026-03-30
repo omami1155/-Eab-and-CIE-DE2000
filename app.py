@@ -127,7 +127,7 @@ def format_stat(value):
 
 st.set_page_config(page_title="ΔE Calculator CSV", page_icon="🎨", layout="wide")
 
-st.title("色差一括計算（CSV対応）")
+st.title("色差計算")
 st.write("CSVを読み込んで、ΔE*ab（CIE76）と ΔE00（CIEDE2000）を一括計算します。")
 
 st.subheader("必要な列名")
