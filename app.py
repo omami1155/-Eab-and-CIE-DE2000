@@ -199,20 +199,19 @@ if uploaded_file is not None:
 
                 st.subheader("概要")
 
-                c1, c2, c3, c4, c5, c6 = st.columns(6)
-                c1.metric("計算成功件数", int((result_df["status"] == "OK").sum()))
-                c2.metric("ΔE00 平均", format_stat(valid_de00.mean()))
-                c3.metric("ΔE00 最小", format_stat(valid_de00.min()))
-                c4.metric("ΔE00 最大", format_stat(valid_de00.max()))
-                c5.metric("ΔE00 中央値", format_stat(valid_de00.median()))
-                c6.metric("ΔE00 SD", format_stat(valid_de00.std()))
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("ΔE00 平均", format_stat(valid_de00.mean()))
+                c2.metric("ΔE00 最小", format_stat(valid_de00.min()))
+                c3.metric("ΔE00 最大", format_stat(valid_de00.max()))
+                c4.metric("ΔE00 中央値", format_stat(valid_de00.median()))
+                c5.metric("ΔE00 SD", format_stat(valid_de00.std()))
 
-                c7, c8, c9, c10, c11 = st.columns(5)
-                c7.metric("ΔE*ab 平均", format_stat(valid_de76.mean()))
-                c8.metric("ΔE*ab 最小", format_stat(valid_de76.min()))
-                c9.metric("ΔE*ab 最大", format_stat(valid_de76.max()))
-                c10.metric("ΔE*ab 中央値", format_stat(valid_de76.median()))
-                c11.metric("ΔE*ab SD", format_stat(valid_de76.std()))
+                c6, c7, c8, c9, c10 = st.columns(5)
+                c6.metric("ΔE*ab 平均", format_stat(valid_de76.mean()))
+                c7.metric("ΔE*ab 最小", format_stat(valid_de76.min()))
+                c8.metric("ΔE*ab 最大", format_stat(valid_de76.max()))
+                c9.metric("ΔE*ab 中央値", format_stat(valid_de76.median()))
+                c10.metric("ΔE*ab SD", format_stat(valid_de76.std()))
 
                 csv_result = result_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
