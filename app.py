@@ -82,7 +82,6 @@ def delta_e_00(L1, a1, b1, L2, a2, b2, kL=1, kC=1, kH=1):
 
 
 def calc_row(row):
-    """1行分の計算"""
     try:
         L1 = float(row["L1*"])
         a1 = float(row["a1*"])
@@ -97,90 +96,96 @@ def calc_row(row):
         return pd.Series({
             "ΔE*ab (CIE76)": round(de76, 4),
             "ΔE00 (CIEDE2000)": round(de00, 4),
+            "status": "OK",
         })
     except Exception:
         return pd.Series({
             "ΔE*ab (CIE76)": None,
             "ΔE00 (CIEDE2000)": None,
+            "status": "NG",
         })
 
 
-st.set_page_config(page_title="ΔE Calculator", page_icon="🎨", layout="wide")
+def load_csv(uploaded_file):
+    # 文字コードの違いに少し強くしておく
+    encodings = ["utf-8-sig", "utf-8", "cp932"]
+    for enc in encodings:
+        try:
+            uploaded_file.seek(0)
+            return pd.read_csv(uploaded_file, encoding=enc)
+        except Exception:
+            continue
+    raise ValueError("CSVを読み込めませんでした。UTF-8 または CP932 のCSVを確認してください。")
 
-st.title("色差一括計算")
-st.write("複数組の L*, a*, b* をまとめて入力して、ΔE*ab（CIE76）と ΔE00（CIEDE2000）を一括計算します。")
 
-default_df = pd.DataFrame([
-    {
-        "ID": "sample1",
-        "L1*": 50.0000,
-        "a1*": 2.6772,
-        "b1*": -79.7751,
-        "L2*": 50.0000,
-        "a2*": 0.0000,
-        "b2*": -82.7485,
-    },
-    {
-        "ID": "sample2",
-        "L1*": 50.0000,
-        "a1*": 3.1571,
-        "b1*": -77.2803,
-        "L2*": 50.0000,
-        "a2*": 0.0000,
-        "b2*": -82.7485,
-    },
-])
+st.set_page_config(page_title="ΔE Calculator CSV", page_icon="🎨", layout="wide")
 
-st.subheader("入力表")
-edited_df = st.data_editor(
-    default_df,
-    num_rows="dynamic",
-    use_container_width=True,
-)
+st.title("色差一括計算（CSV対応）")
+st.write("CSVを読み込んで、ΔE*ab（CIE76）と ΔE00（CIEDE2000）を一括計算します。")
 
-col1, col2 = st.columns([1, 1])
+st.subheader("必要な列名")
+st.code("L1*, a1*, b1*, L2*, a2*, b2*")
 
-with col1:
-    calc_button = st.button("一括計算", type="primary")
+with st.expander("CSVの例"):
+    sample_df = pd.DataFrame([
+        {"ID": "sample1", "L1*": 50.0000, "a1*": 2.6772, "b1*": -79.7751, "L2*": 50.0000, "a2*": 0.0000, "b2*": -82.7485},
+        {"ID": "sample2", "L1*": 50.0000, "a1*": 3.1571, "b1*": -77.2803, "L2*": 50.0000, "a2*": 0.0000, "b2*": -82.7485},
+    ])
+    st.dataframe(sample_df, use_container_width=True)
+    sample_csv = sample_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "サンプルCSVをダウンロード",
+        data=sample_csv,
+        file_name="delta_e_sample.csv",
+        mime="text/csv",
+    )
 
-with col2:
-    st.caption("行を追加して複数サンプルをまとめて計算できます。")
+uploaded_file = st.file_uploader("CSVファイルを選択してください", type=["csv"])
 
-if calc_button:
-    required_cols = ["L1*", "a1*", "b1*", "L2*", "a2*", "b2*"]
-    missing_cols = [c for c in required_cols if c not in edited_df.columns]
+if uploaded_file is not None:
+    try:
+        df = load_csv(uploaded_file)
+        st.success("CSVを読み込みました。必要なら表内で直接修正できます。")
 
-    if missing_cols:
-        st.error(f"必要な列がありません: {', '.join(missing_cols)}")
-    else:
-        result_df = edited_df.copy()
-        calc_results = result_df.apply(calc_row, axis=1)
-        result_df = pd.concat([result_df, calc_results], axis=1)
-
-        st.divider()
-        st.subheader("計算結果")
-        st.dataframe(result_df, use_container_width=True)
-
-        csv = result_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            label="結果をCSVでダウンロード",
-            data=csv,
-            file_name="delta_e_results.csv",
-            mime="text/csv",
+        st.subheader("読み込んだデータ")
+        edited_df = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
         )
 
-        st.subheader("概要")
-        valid_de00 = result_df["ΔE00 (CIEDE2000)"].dropna()
-        valid_de76 = result_df["ΔE*ab (CIE76)"].dropna()
+        required_cols = ["L1*", "a1*", "b1*", "L2*", "a2*", "b2*"]
+        missing_cols = [c for c in required_cols if c not in edited_df.columns]
 
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("計算件数", len(valid_de00))
-        with c2:
-            st.metric("ΔE00 平均", f"{valid_de00.mean():.4f}" if len(valid_de00) else "-")
-        with c3:
-            st.metric("ΔE00 最小", f"{valid_de00.min():.4f}" if len(valid_de00) else "-")
-        with c4:
-            st.metric("ΔE00 最大", f"{valid_de00.max():.4f}" if len(valid_de00) else "-")
+        if missing_cols:
+            st.error(f"必要な列が不足しています: {', '.join(missing_cols)}")
+        else:
+            if st.button("一括計算", type="primary"):
+                result_df = edited_df.copy()
+                calc_results = result_df.apply(calc_row, axis=1)
+                result_df = pd.concat([result_df, calc_results], axis=1)
 
-        st.caption("空欄や不正値を含む行は結果が空欄になります。")
+                st.divider()
+                st.subheader("計算結果")
+                st.dataframe(result_df, use_container_width=True)
+
+                valid_de00 = result_df["ΔE00 (CIEDE2000)"].dropna()
+                valid_de76 = result_df["ΔE*ab (CIE76)"].dropna()
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("計算成功件数", int((result_df["status"] == "OK").sum()))
+                c2.metric("ΔE00 平均", f"{valid_de00.mean():.4f}" if len(valid_de00) else "-")
+                c3.metric("ΔE00 最小", f"{valid_de00.min():.4f}" if len(valid_de00) else "-")
+                c4.metric("ΔE00 最大", f"{valid_de00.max():.4f}" if len(valid_de00) else "-")
+
+                csv_result = result_df.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    label="結果CSVをダウンロード",
+                    data=csv_result,
+                    file_name="delta_e_results.csv",
+                    mime="text/csv",
+                )
+
+    except Exception as e:
+        st.error(f"読み込みエラー: {e}")
