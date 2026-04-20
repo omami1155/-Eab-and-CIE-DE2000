@@ -1,8 +1,17 @@
+from pathlib import Path
+
+code = r'''import itertools
 import math
+from typing import Iterable, List, Sequence, Tuple
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 
+# =========================
+# 色差計算
+# =========================
 def delta_e_ab(L1, a1, b1, L2, a2, b2):
     """従来の ΔE*ab (CIE76)"""
     return math.sqrt((L2 - L1) ** 2 + (a2 - a1) ** 2 + (b2 - b1) ** 2)
@@ -14,7 +23,7 @@ def delta_e_00(L1, a1, b1, L2, a2, b2, kL=1, kC=1, kH=1):
     C2 = math.sqrt(a2 * a2 + b2 * b2)
     C_bar = (C1 + C2) / 2.0
 
-    G = 0.5 * (1.0 - math.sqrt((C_bar ** 7) / ((C_bar ** 7) + (25.0 ** 7))))
+    G = 0.5 * (1.0 - math.sqrt((C_bar**7) / ((C_bar**7) + (25.0**7))))
     a1p = (1.0 + G) * a1
     a2p = (1.0 + G) * a2
 
@@ -66,7 +75,7 @@ def delta_e_00(L1, a1, b1, L2, a2, b2, kL=1, kC=1, kH=1):
     )
 
     dtheta = 30.0 * math.exp(-((h_bar_p - 275.0) / 25.0) ** 2)
-    Rc = 2.0 * math.sqrt((C_bar_p ** 7) / ((C_bar_p ** 7) + (25.0 ** 7)))
+    Rc = 2.0 * math.sqrt((C_bar_p**7) / ((C_bar_p**7) + (25.0**7)))
 
     Sl = 1.0 + (0.015 * ((L_bar_p - 50.0) ** 2)) / math.sqrt(20.0 + ((L_bar_p - 50.0) ** 2))
     Sc = 1.0 + 0.045 * C_bar_p
@@ -81,33 +90,10 @@ def delta_e_00(L1, a1, b1, L2, a2, b2, kL=1, kC=1, kH=1):
     )
 
 
-def calc_row(row):
-    try:
-        L1 = float(row["L1*"])
-        a1 = float(row["a1*"])
-        b1 = float(row["b1*"])
-        L2 = float(row["L2*"])
-        a2 = float(row["a2*"])
-        b2 = float(row["b2*"])
-
-        de76 = delta_e_ab(L1, a1, b1, L2, a2, b2)
-        de00 = delta_e_00(L1, a1, b1, L2, a2, b2)
-
-        return pd.Series({
-            "ΔE*ab (CIE76)": round(de76, 4),
-            "ΔE00 (CIEDE2000)": round(de00, 4),
-            "status": "OK",
-        })
-    except Exception:
-        return pd.Series({
-            "ΔE*ab (CIE76)": None,
-            "ΔE00 (CIEDE2000)": None,
-            "status": "NG",
-        })
-
-
+# =========================
+# 共通ユーティリティ
+# =========================
 def load_csv(uploaded_file):
-    """文字コードの違いに少し強くする"""
     encodings = ["utf-8-sig", "utf-8", "cp932"]
     for enc in encodings:
         try:
@@ -115,52 +101,298 @@ def load_csv(uploaded_file):
             return pd.read_csv(uploaded_file, encoding=enc)
         except Exception:
             continue
-    raise ValueError("CSVを読み込めませんでした。UTF-8 または CP932 のCSVを確認してください。")
+    raise ValueError("CSVを読み込めませんでした。UTF-8 / UTF-8-SIG / CP932 を確認してください。")
 
 
-def format_stat(value):
-    """表示用フォーマット"""
-    if pd.isna(value):
+def format_num(value, digits=4):
+    if value is None or pd.isna(value):
         return "-"
-    return f"{value:.4f}"
+    return f"{value:.{digits}f}"
 
 
-st.set_page_config(page_title="色差計算機", page_icon="🎨", layout="wide")
+def coerce_numeric_columns(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
 
-st.title("色差計算")
-st.write("CSVを読み込んで、ΔE*ab（CIE76）と ΔE00（CIEDE2000）を一括計算します。")
 
-st.subheader("必要な列名")
-st.code("L1*, a1*, b1*, L2*, a2*, b2*")
+def make_distance_matrix(lab_df: pd.DataFrame) -> pd.DataFrame:
+    n = len(lab_df)
+    ids = lab_df["SampleID"].tolist()
+    arr = lab_df[["L_mean", "a_mean", "b_mean"]].to_numpy(dtype=float)
+
+    dist = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            de00 = delta_e_00(
+                arr[i, 0], arr[i, 1], arr[i, 2],
+                arr[j, 0], arr[j, 1], arr[j, 2]
+            )
+            dist[i, j] = de00
+            dist[j, i] = de00
+
+    return pd.DataFrame(dist, index=ids, columns=ids)
+
+
+def pairwise_deltae_table(sample_means: pd.DataFrame, g1: str, g2: str) -> pd.DataFrame:
+    left = sample_means[sample_means["Group"] == g1].copy()
+    right = sample_means[sample_means["Group"] == g2].copy()
+
+    rows = []
+    for _, r1 in left.iterrows():
+        for _, r2 in right.iterrows():
+            rows.append({
+                "Group1": g1,
+                "Sample1": r1["SampleID"],
+                "Group2": g2,
+                "Sample2": r2["SampleID"],
+                "ΔE00": delta_e_00(r1["L_mean"], r1["a_mean"], r1["b_mean"],
+                                 r2["L_mean"], r2["a_mean"], r2["b_mean"]),
+                "ΔE*ab": delta_e_ab(r1["L_mean"], r1["a_mean"], r1["b_mean"],
+                                   r2["L_mean"], r2["a_mean"], r2["b_mean"]),
+            })
+    return pd.DataFrame(rows)
+
+
+def within_group_deltae_table(sample_means: pd.DataFrame, group_name: str) -> pd.DataFrame:
+    sub = sample_means[sample_means["Group"] == group_name].copy()
+    rows = []
+    for i, j in itertools.combinations(sub.index, 2):
+        r1 = sub.loc[i]
+        r2 = sub.loc[j]
+        rows.append({
+            "Group": group_name,
+            "Sample1": r1["SampleID"],
+            "Sample2": r2["SampleID"],
+            "ΔE00": delta_e_00(r1["L_mean"], r1["a_mean"], r1["b_mean"],
+                             r2["L_mean"], r2["a_mean"], r2["b_mean"]),
+            "ΔE*ab": delta_e_ab(r1["L_mean"], r1["a_mean"], r1["b_mean"],
+                               r2["L_mean"], r2["a_mean"], r2["b_mean"]),
+        })
+    return pd.DataFrame(rows)
+
+
+# =========================
+# PERMANOVA
+# =========================
+def permanova_ss(distance_matrix: np.ndarray, groups: Sequence[str]) -> Tuple[float, float, float]:
+    """1要因PERMANOVAのSS群間, SS群内, SS全体を返す"""
+    n = len(groups)
+    unique_groups = list(pd.unique(pd.Series(groups)))
+
+    sst = distance_matrix[np.triu_indices(n, 1)]
+    ss_total = np.sum(sst ** 2) / n
+
+    ss_within = 0.0
+    for g in unique_groups:
+        idx = [i for i, x in enumerate(groups) if x == g]
+        nk = len(idx)
+        if nk <= 1:
+            continue
+        sub = distance_matrix[np.ix_(idx, idx)]
+        upper = sub[np.triu_indices(nk, 1)]
+        ss_within += np.sum(upper ** 2) / nk
+
+    ss_between = ss_total - ss_within
+    return ss_between, ss_within, ss_total
+
+
+def permanova_pseudo_f(distance_matrix: np.ndarray, groups: Sequence[str]) -> Tuple[float, float, float]:
+    unique_groups = list(pd.unique(pd.Series(groups)))
+    n = len(groups)
+    g = len(unique_groups)
+
+    ss_between, ss_within, _ = permanova_ss(distance_matrix, groups)
+
+    df_between = g - 1
+    df_within = n - g
+
+    ms_between = ss_between / df_between
+    ms_within = ss_within / df_within if df_within > 0 else np.nan
+    pseudo_f = ms_between / ms_within if ms_within > 0 else np.nan
+    r2 = ss_between / (ss_between + ss_within) if (ss_between + ss_within) > 0 else np.nan
+    return pseudo_f, r2, ms_within
+
+
+def exact_or_monte_carlo_permanova(
+    distance_matrix: np.ndarray,
+    groups: Sequence[str],
+    max_exact_partitions: int = 50000,
+    monte_carlo_permutations: int = 9999,
+    random_seed: int = 42,
+) -> dict:
+    groups = list(groups)
+    unique_groups = list(pd.unique(pd.Series(groups)))
+    if len(unique_groups) != 2:
+        raise ValueError("このアプリの主解析は2群比較のみ対応しています。")
+
+    n = len(groups)
+    n_a = sum(1 for x in groups if x == unique_groups[0])
+    observed_f, r2, ms_within = permanova_pseudo_f(distance_matrix, groups)
+
+    total_partitions = math.comb(n, n_a)
+
+    perm_f_values = []
+    if total_partitions <= max_exact_partitions:
+        all_indices = list(range(n))
+        for comb in itertools.combinations(all_indices, n_a):
+            perm_groups = [unique_groups[1]] * n
+            for idx in comb:
+                perm_groups[idx] = unique_groups[0]
+            f_val, _, _ = permanova_pseudo_f(distance_matrix, perm_groups)
+            perm_f_values.append(f_val)
+        method = f"exact ({total_partitions} partitions)"
+    else:
+        rng = np.random.default_rng(random_seed)
+        arr_groups = np.array(groups)
+        for _ in range(monte_carlo_permutations):
+            permuted = rng.permutation(arr_groups)
+            f_val, _, _ = permanova_pseudo_f(distance_matrix, permuted.tolist())
+            perm_f_values.append(f_val)
+        method = f"monte_carlo ({monte_carlo_permutations} permutations)"
+
+    perm_f_values = np.array(perm_f_values, dtype=float)
+    p_value = (1 + np.sum(perm_f_values >= observed_f)) / (1 + len(perm_f_values))
+
+    return {
+        "pseudo_F": observed_f,
+        "R2": r2,
+        "p_value": p_value,
+        "perm_method": method,
+        "n_permutations": len(perm_f_values),
+        "ms_within": ms_within,
+    }
+
+
+def permutation_test_two_groups(values: Sequence[float], groups: Sequence[str]) -> dict:
+    """2群の差の置換検定（平均差）"""
+    values = np.asarray(values, dtype=float)
+    groups = np.asarray(groups)
+    unique_groups = pd.unique(pd.Series(groups))
+    if len(unique_groups) != 2:
+        raise ValueError("2群比較のみ対応しています。")
+
+    g1, g2 = unique_groups[0], unique_groups[1]
+    idx1 = np.where(groups == g1)[0]
+    idx2 = np.where(groups == g2)[0]
+
+    obs_diff = np.mean(values[idx1]) - np.mean(values[idx2])
+
+    n = len(values)
+    n1 = len(idx1)
+    diffs = []
+    for comb in itertools.combinations(range(n), n1):
+        mask = np.zeros(n, dtype=bool)
+        mask[list(comb)] = True
+        diff = np.mean(values[mask]) - np.mean(values[~mask])
+        diffs.append(diff)
+
+    diffs = np.asarray(diffs, dtype=float)
+    p_value = (1 + np.sum(np.abs(diffs) >= abs(obs_diff))) / (1 + len(diffs))
+
+    return {
+        "group1": g1,
+        "group2": g2,
+        "mean_group1": float(np.mean(values[idx1])),
+        "mean_group2": float(np.mean(values[idx2])),
+        "difference": float(obs_diff),
+        "p_value": float(p_value),
+        "n_permutations": int(len(diffs)),
+    }
+
+
+# =========================
+# データ処理
+# =========================
+def summarize_samples(df: pd.DataFrame) -> pd.DataFrame:
+    grouped = (
+        df.groupby(["Group", "SampleID"], dropna=False)
+        .agg(
+            n_repeats=("L*", "size"),
+            L_mean=("L*", "mean"),
+            a_mean=("a*", "mean"),
+            b_mean=("b*", "mean"),
+            L_sd=("L*", "std"),
+            a_sd=("a*", "std"),
+            b_sd=("b*", "std"),
+        )
+        .reset_index()
+    )
+    return grouped
+
+
+def summarize_groups(sample_means: pd.DataFrame) -> pd.DataFrame:
+    return (
+        sample_means.groupby("Group", dropna=False)
+        .agg(
+            n_samples=("SampleID", "size"),
+            L_group_mean=("L_mean", "mean"),
+            a_group_mean=("a_mean", "mean"),
+            b_group_mean=("b_mean", "mean"),
+            L_group_sd=("L_mean", "std"),
+            a_group_sd=("a_mean", "std"),
+            b_group_sd=("b_mean", "std"),
+        )
+        .reset_index()
+    )
+
+
+def validate_input(df: pd.DataFrame) -> Tuple[bool, List[str]]:
+    errors = []
+    required_cols = ["Group", "SampleID", "L*", "a*", "b*"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        errors.append(f"必要な列が不足しています: {', '.join(missing)}")
+        return False, errors
+
+    work = coerce_numeric_columns(df, ["L*", "a*", "b*"])
+    if work[["L*", "a*", "b*"]].isna().any().any():
+        bad_rows = work[work[["L*", "a*", "b*"]].isna().any(axis=1)].index.tolist()
+        errors.append(f"L*, a*, b* に数値でない値があります。該当行: {', '.join(str(i + 1) for i in bad_rows[:10])}")
+
+    n_groups = work["Group"].astype(str).nunique()
+    if n_groups != 2:
+        errors.append(f"Group はちょうど2群必要です。現在: {n_groups} 群")
+
+    return len(errors) == 0, errors
+
+
+# =========================
+# Streamlit UI
+# =========================
+st.set_page_config(page_title="独立二群 色差解析", page_icon="🎨", layout="wide")
+
+st.title("独立二群の色差解析")
+st.write(
+    "反復測定した L*, a*, b* のCSVを読み込み、"
+    "サンプル平均 → 主解析（PERMANOVA）→ 補助解析（群代表色のΔE00、群内/群間の総当たりΔE）まで一括で計算します。"
+)
+
+st.subheader("入力CSVの列")
+st.code("Group, SampleID, L*, a*, b*")
+st.caption("1行 = 1回の測定。Replicate列は不要です。A1を5回測ったなら、SampleID=A1の行を5行入れてください。")
 
 with st.expander("CSVの例"):
     sample_df = pd.DataFrame([
-        {
-            "ID": "sample1",
-            "L1*": 50.0000,
-            "a1*": 2.6772,
-            "b1*": -79.7751,
-            "L2*": 50.0000,
-            "a2*": 0.0000,
-            "b2*": -82.7485,
-        },
-        {
-            "ID": "sample2",
-            "L1*": 50.0000,
-            "a1*": 3.1571,
-            "b1*": -77.2803,
-            "L2*": 50.0000,
-            "a2*": 0.0000,
-            "b2*": -82.7485,
-        },
+        {"Group": "A", "SampleID": "A1", "L*": 70.10, "a*": 1.20, "b*": 12.00},
+        {"Group": "A", "SampleID": "A1", "L*": 70.30, "a*": 1.00, "b*": 11.90},
+        {"Group": "A", "SampleID": "A1", "L*": 70.00, "a*": 1.10, "b*": 12.10},
+        {"Group": "A", "SampleID": "A1", "L*": 70.20, "a*": 1.10, "b*": 12.00},
+        {"Group": "A", "SampleID": "A1", "L*": 70.10, "a*": 1.20, "b*": 11.80},
+        {"Group": "A", "SampleID": "A2", "L*": 69.70, "a*": 1.30, "b*": 11.60},
+        {"Group": "A", "SampleID": "A2", "L*": 69.80, "a*": 1.20, "b*": 11.50},
+        {"Group": "B", "SampleID": "B1", "L*": 72.40, "a*": 0.60, "b*": 14.20},
+        {"Group": "B", "SampleID": "B1", "L*": 72.30, "a*": 0.70, "b*": 14.10},
+        {"Group": "B", "SampleID": "B2", "L*": 72.00, "a*": 0.50, "b*": 13.90},
+        {"Group": "B", "SampleID": "B2", "L*": 72.20, "a*": 0.60, "b*": 14.00},
     ])
-    st.dataframe(sample_df, use_container_width=True)
+    st.dataframe(sample_df, use_container_width=True, hide_index=True)
 
-    sample_csv = sample_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "サンプルCSVをダウンロード",
-        data=sample_csv,
-        file_name="delta_e_sample.csv",
+        data=sample_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="independent_groups_lab_sample.csv",
         mime="text/csv",
     )
 
@@ -168,60 +400,215 @@ uploaded_file = st.file_uploader("CSVファイルを選択してください", t
 
 if uploaded_file is not None:
     try:
-        df = load_csv(uploaded_file)
+        raw_df = load_csv(uploaded_file)
         st.success("CSVを読み込みました。必要なら表内で直接修正できます。")
 
-        st.subheader("読み込んだデータ")
         edited_df = st.data_editor(
-            df,
+            raw_df,
             num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
         )
 
-        required_cols = ["L1*", "a1*", "b1*", "L2*", "a2*", "b2*"]
-        missing_cols = [c for c in required_cols if c not in edited_df.columns]
-
-        if missing_cols:
-            st.error(f"必要な列が不足しています: {', '.join(missing_cols)}")
+        is_valid, errors = validate_input(edited_df)
+        if not is_valid:
+            for msg in errors:
+                st.error(msg)
         else:
-            if st.button("計算!!", type="primary"):
-                result_df = edited_df.copy()
-                calc_results = result_df.apply(calc_row, axis=1)
-                result_df = pd.concat([result_df, calc_results], axis=1)
+            if st.button("解析する", type="primary"):
+                work_df = edited_df.copy()
+                work_df["Group"] = work_df["Group"].astype(str)
+                work_df["SampleID"] = work_df["SampleID"].astype(str)
+                work_df = coerce_numeric_columns(work_df, ["L*", "a*", "b*"])
+                work_df = work_df.dropna(subset=["L*", "a*", "b*"]).reset_index(drop=True)
+
+                # サンプル平均
+                sample_means = summarize_samples(work_df)
+                sample_means["repeat_warning"] = np.where(
+                    sample_means["n_repeats"] != 5,
+                    "※5回ではありません",
+                    ""
+                )
+
+                # 群代表色
+                group_summary = summarize_groups(sample_means)
+                if len(group_summary) != 2:
+                    st.error("2群比較のみ対応しています。Group を2群にしてください。")
+                    st.stop()
+
+                g1 = group_summary.loc[0, "Group"]
+                g2 = group_summary.loc[1, "Group"]
+
+                de00_group = delta_e_00(
+                    group_summary.loc[0, "L_group_mean"],
+                    group_summary.loc[0, "a_group_mean"],
+                    group_summary.loc[0, "b_group_mean"],
+                    group_summary.loc[1, "L_group_mean"],
+                    group_summary.loc[1, "a_group_mean"],
+                    group_summary.loc[1, "b_group_mean"],
+                )
+                de76_group = delta_e_ab(
+                    group_summary.loc[0, "L_group_mean"],
+                    group_summary.loc[0, "a_group_mean"],
+                    group_summary.loc[0, "b_group_mean"],
+                    group_summary.loc[1, "L_group_mean"],
+                    group_summary.loc[1, "a_group_mean"],
+                    group_summary.loc[1, "b_group_mean"],
+                )
+
+                # 距離行列とPERMANOVA
+                dist_df = make_distance_matrix(sample_means)
+                permanova_result = exact_or_monte_carlo_permanova(
+                    distance_matrix=dist_df.to_numpy(dtype=float),
+                    groups=sample_means["Group"].tolist(),
+                )
+
+                # 軸ごとの補助検定
+                l_test = permutation_test_two_groups(sample_means["L_mean"], sample_means["Group"])
+                a_test = permutation_test_two_groups(sample_means["a_mean"], sample_means["Group"])
+                b_test = permutation_test_two_groups(sample_means["b_mean"], sample_means["Group"])
+
+                # 総当たりΔE
+                within_g1 = within_group_deltae_table(sample_means, g1)
+                within_g2 = within_group_deltae_table(sample_means, g2)
+                between = pairwise_deltae_table(sample_means, g1, g2)
 
                 st.divider()
-                st.subheader("計算結果")
-                st.dataframe(result_df, use_container_width=True)
+                st.subheader("1) サンプル平均（主解析に使うデータ）")
+                st.dataframe(sample_means, use_container_width=True, hide_index=True)
 
-                valid_de00 = result_df["ΔE00 (CIEDE2000)"].dropna()
-                valid_de76 = result_df["ΔE*ab (CIE76)"].dropna()
+                st.subheader("2) 主解析：PERMANOVA（ΔE00距離）")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("pseudo-F", format_num(permanova_result["pseudo_F"]))
+                c2.metric("p値", format_num(permanova_result["p_value"]))
+                c3.metric("R²", format_num(permanova_result["R2"]))
+                c4.metric("置換法", permanova_result["perm_method"])
 
-                st.subheader("概要")
+                st.caption(
+                    "主解析は、各サンプルの平均L*, a*, b*から10×10のΔE00距離行列を作り、"
+                    "Group（2群）でPERMANOVAを行っています。"
+                )
 
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("ΔE00 平均", format_stat(valid_de00.mean()))
-                c2.metric("ΔE00 最小", format_stat(valid_de00.min()))
-                c3.metric("ΔE00 最大", format_stat(valid_de00.max()))
-                c4.metric("ΔE00 中央値", format_stat(valid_de00.median()))
-                c5.metric("ΔE00 SD", format_stat(valid_de00.std()))
+                st.subheader("3) 補助：群代表色")
+                st.dataframe(group_summary, use_container_width=True, hide_index=True)
 
-                c6, c7, c8, c9, c10 = st.columns(5)
-                c6.metric("ΔE*ab 平均", format_stat(valid_de76.mean()))
-                c7.metric("ΔE*ab 最小", format_stat(valid_de76.min()))
-                c8.metric("ΔE*ab 最大", format_stat(valid_de76.max()))
-                c9.metric("ΔE*ab 中央値", format_stat(valid_de76.median()))
-                c10.metric("ΔE*ab SD", format_stat(valid_de76.std()))
+                c5, c6 = st.columns(2)
+                c5.metric("群代表色の ΔE00", format_num(de00_group))
+                c6.metric("群代表色の ΔE*ab", format_num(de76_group))
 
-                csv_result = result_df.to_csv(index=False).encode("utf-8-sig")
+                st.subheader("4) 補助：L*, a*, b* を個別に比較（置換検定）")
+                axis_df = pd.DataFrame([
+                    {
+                        "Axis": "L*",
+                        f"{l_test['group1']} mean": l_test["mean_group1"],
+                        f"{l_test['group2']} mean": l_test["mean_group2"],
+                        "差 (group1 - group2)": l_test["difference"],
+                        "p値": l_test["p_value"],
+                        "置換数": l_test["n_permutations"],
+                    },
+                    {
+                        "Axis": "a*",
+                        f"{a_test['group1']} mean": a_test["mean_group1"],
+                        f"{a_test['group2']} mean": a_test["mean_group2"],
+                        "差 (group1 - group2)": a_test["difference"],
+                        "p値": a_test["p_value"],
+                        "置換数": a_test["n_permutations"],
+                    },
+                    {
+                        "Axis": "b*",
+                        f"{b_test['group1']} mean": b_test["mean_group1"],
+                        f"{b_test['group2']} mean": b_test["mean_group2"],
+                        "差 (group1 - group2)": b_test["difference"],
+                        "p値": b_test["p_value"],
+                        "置換数": b_test["n_permutations"],
+                    },
+                ])
+                st.dataframe(axis_df, use_container_width=True, hide_index=True)
+
+                st.subheader("5) 補助：群内・群間の総当たりΔE")
+                t1, t2, t3 = st.tabs(
+                    [f"{g1}群内", f"{g2}群内", f"{g1}-{g2}群間"]
+                )
+                with t1:
+                    st.dataframe(within_g1, use_container_width=True, hide_index=True)
+                with t2:
+                    st.dataframe(within_g2, use_container_width=True, hide_index=True)
+                with t3:
+                    st.dataframe(between, use_container_width=True, hide_index=True)
+
+                summary_rows = []
+                for label, sub_df in [
+                    (f"{g1}群内", within_g1),
+                    (f"{g2}群内", within_g2),
+                    (f"{g1}-{g2}群間", between),
+                ]:
+                    summary_rows.append({
+                        "区分": label,
+                        "件数": len(sub_df),
+                        "ΔE00 平均": sub_df["ΔE00"].mean() if len(sub_df) else np.nan,
+                        "ΔE00 中央値": sub_df["ΔE00"].median() if len(sub_df) else np.nan,
+                        "ΔE00 SD": sub_df["ΔE00"].std() if len(sub_df) else np.nan,
+                        "ΔE00 最小": sub_df["ΔE00"].min() if len(sub_df) else np.nan,
+                        "ΔE00 最大": sub_df["ΔE00"].max() if len(sub_df) else np.nan,
+                    })
+
+                st.subheader("6) 総当たりΔEの要約")
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+                st.caption(
+                    "群内10通り・群間25通りの総当たりΔEは記述用です。"
+                    "同じサンプルが繰り返し使われるため、独立nとして推測統計には使いません。"
+                )
+
+                st.subheader("7) 距離行列（ΔE00）")
+                st.dataframe(dist_df, use_container_width=True)
+
+                # ダウンロード
+                output_dict = {
+                    "sample_means": sample_means,
+                    "group_summary": group_summary.assign(
+                        group_deltaE00_vs_other=np.nan,
+                        group_deltaE76_vs_other=np.nan,
+                    ),
+                    "axis_tests": axis_df,
+                    "within_group_1": within_g1,
+                    "within_group_2": within_g2,
+                    "between_groups": between,
+                    "distance_matrix": dist_df.reset_index().rename(columns={"index": "SampleID"}),
+                    "pairwise_summary": pd.DataFrame(summary_rows),
+                    "permanova_result": pd.DataFrame([permanova_result]),
+                }
+
+                csv_sample = sample_means.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    label="結果CSVをダウンロード",
-                    data=csv_result,
-                    file_name="delta_e_results.csv",
+                    "サンプル平均CSVをダウンロード",
+                    data=csv_sample,
+                    file_name="sample_means.csv",
                     mime="text/csv",
                 )
 
-                st.caption("SD は標本標準偏差です。計算対象が1件のみの場合、SD は表示されません。")
+                # Excel出力
+                excel_buffer = pd.ExcelWriter("independent_groups_color_analysis.xlsx", engine="openpyxl")
+                for sheet_name, out_df in output_dict.items():
+                    out_df.to_excel(excel_buffer, index=False, sheet_name=sheet_name[:31])
+                excel_buffer.close()
+
+                with open("independent_groups_color_analysis.xlsx", "rb") as f:
+                    st.download_button(
+                        "解析結果Excelをダウンロード",
+                        data=f.read(),
+                        file_name="independent_groups_color_analysis.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                st.info(
+                    "解釈の基本: 主解析は PERMANOVA の p値を見る。"
+                    "補助として群代表色のΔE00、さらに群内/群間の総当たりΔE分布を見る。"
+                )
 
     except Exception as e:
-        st.error(f"読み込みエラー: {e}")
+        st.error(f"読み込みまたは解析エラー: {e}")
+'''
+
+path = Path("/mnt/data/streamlit_independent_groups_color_analysis.py")
+path.write_text(code, encoding="utf-8")
+print(str(path))
