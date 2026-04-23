@@ -124,6 +124,21 @@ def rounded_display(df: pd.DataFrame, digits: int = 4) -> pd.DataFrame:
     return out
 
 
+def cleaned_text_values(series: pd.Series) -> List[str]:
+    cleaned = series.where(series.notna(), "").astype(str).str.strip()
+    return list(pd.unique(cleaned[cleaned != ""]))
+
+
+def prepare_analysis_df(df: pd.DataFrame) -> pd.DataFrame:
+    work = df.copy()
+    work["Group"] = work["Group"].where(work["Group"].notna(), "").astype(str).str.strip()
+    work["SampleID"] = work["SampleID"].where(work["SampleID"].notna(), "").astype(str).str.strip()
+    work = coerce_numeric_columns(work, ["L*", "a*", "b*"])
+    work = work.dropna(subset=["L*", "a*", "b*"])
+    work = work[(work["Group"] != "") & (work["SampleID"] != "")]
+    return work.reset_index(drop=True)
+
+
 def make_distance_matrix(lab_df: pd.DataFrame) -> pd.DataFrame:
     n = len(lab_df)
     ids = lab_df["SampleID"].tolist()
@@ -359,14 +374,26 @@ def validate_input(df: pd.DataFrame) -> Tuple[bool, List[str]]:
         errors.append(f"必要な列が不足しています: {', '.join(missing)}")
         return False, errors
 
-    work = coerce_numeric_columns(df, ["L*", "a*", "b*"])
+    work = df.copy()
+    work["Group"] = work["Group"].where(work["Group"].notna(), "").astype(str).str.strip()
+    work["SampleID"] = work["SampleID"].where(work["SampleID"].notna(), "").astype(str).str.strip()
+    work = coerce_numeric_columns(work, ["L*", "a*", "b*"])
+
+    blank_group_rows = work.index[work["Group"] == ""].tolist()
+    if blank_group_rows:
+        errors.append(f"Group が空欄の行があります。該当行: {', '.join(str(i + 1) for i in blank_group_rows[:10])}")
+
+    blank_sample_rows = work.index[work["SampleID"] == ""].tolist()
+    if blank_sample_rows:
+        errors.append(f"SampleID が空欄の行があります。該当行: {', '.join(str(i + 1) for i in blank_sample_rows[:10])}")
+
     if work[["L*", "a*", "b*"]].isna().any().any():
         bad_rows = work[work[["L*", "a*", "b*"]].isna().any(axis=1)].index.tolist()
         errors.append(f"L*, a*, b* に数値でない値があります。該当行: {', '.join(str(i + 1) for i in bad_rows[:10])}")
 
-    n_groups = work["Group"].astype(str).nunique()
-    if n_groups != 2:
-        errors.append(f"Group はちょうど2群必要です。現在: {n_groups} 群")
+    n_groups = len(cleaned_text_values(work["Group"]))
+    if n_groups < 2:
+        errors.append(f"Group は少なくとも2群必要です。現在: {n_groups} 群")
 
     return len(errors) == 0, errors
 
@@ -419,8 +446,9 @@ st.set_page_config(page_title="独立二群 色差解析", page_icon="🎨", lay
 st.title("独立二群の色差解析")
 st.write(
     "このアプリでは ΔE00 を主指標として表示します。"
-    "まず『群代表色どうしのΔE00』と『A-B群間の総当たりΔE00』を確認し、"
+    "まず『群代表色どうしのΔE00』と『選択した2群間の総当たりΔE00』を確認し、"
     "必要に応じて群内ばらつき、L*・a*・b* の内訳、PERMANOVA を参照してください。"
+    "CSVに複数の群が入っていても、比較したい2群を選んで解析できます。"
 )
 
 st.subheader("入力CSVの列")
@@ -469,15 +497,29 @@ if uploaded_file is not None:
             for msg in errors:
                 st.error(msg)
         else:
+            group_options = cleaned_text_values(edited_df["Group"])
+            st.caption("CSVに3群以上含まれていても、ここで選んだ2群だけを解析します。")
+
+            col_g1, col_g2 = st.columns(2)
+            selected_g1 = col_g1.selectbox("比較する群1", options=group_options, index=0)
+            group2_options = [g for g in group_options if g != selected_g1]
+            default_g2 = group_options[1] if len(group_options) > 1 else group_options[0]
+            default_g2_index = group2_options.index(default_g2) if default_g2 in group2_options else 0
+            selected_g2 = col_g2.selectbox("比較する群2", options=group2_options, index=default_g2_index)
+
             if st.button("解析する", type="primary"):
-                work_df = edited_df.copy()
-                work_df["Group"] = work_df["Group"].astype(str)
-                work_df["SampleID"] = work_df["SampleID"].astype(str)
-                work_df = coerce_numeric_columns(work_df, ["L*", "a*", "b*"])
-                work_df = work_df.dropna(subset=["L*", "a*", "b*"]).reset_index(drop=True)
+                selected_groups = [selected_g1, selected_g2]
+                work_df = prepare_analysis_df(edited_df)
+                work_df = work_df[work_df["Group"].isin(selected_groups)].reset_index(drop=True)
+                if work_df["Group"].nunique() != 2:
+                    st.error("選択した2群のどちらかに、有効な測定値がありません。")
+                    st.stop()
 
                 # サンプル平均
                 sample_means = summarize_samples(work_df)
+                sample_means["Group"] = pd.Categorical(sample_means["Group"], categories=selected_groups, ordered=True)
+                sample_means = sample_means.sort_values(["Group", "SampleID"]).reset_index(drop=True)
+                sample_means["Group"] = sample_means["Group"].astype(str)
                 sample_means["repeat_warning"] = np.where(
                     sample_means["n_repeats"] != 5,
                     "※5回ではありません",
@@ -486,9 +528,11 @@ if uploaded_file is not None:
 
                 # 群代表色
                 group_summary = summarize_groups(sample_means)
-                if len(group_summary) != 2:
-                    st.error("2群比較のみ対応しています。Group を2群にしてください。")
+                missing_selected = [g for g in selected_groups if g not in group_summary["Group"].tolist()]
+                if missing_selected:
+                    st.error(f"選択した群に集計できるサンプルがありません: {', '.join(missing_selected)}")
                     st.stop()
+                group_summary = group_summary.set_index("Group").loc[selected_groups].reset_index()
 
                 g1 = group_summary.loc[0, "Group"]
                 g2 = group_summary.loc[1, "Group"]
@@ -537,16 +581,16 @@ if uploaded_file is not None:
                 st.subheader("1) ΔE00の主要結果")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("群代表色どうしのΔE00", format_num(de00_group))
-                m2.metric("A-B群間 総当たりΔE00平均", format_num(between_mean))
-                m3.metric("A-B群間 総当たりΔE00中央値", format_num(between_median))
-                m4.metric("A-B群間 ΔE00範囲", f"{format_num(between_min)} ～ {format_num(between_max)}")
+                m2.metric(f"{g1}-{g2}群間 総当たりΔE00平均", format_num(between_mean))
+                m3.metric(f"{g1}-{g2}群間 総当たりΔE00中央値", format_num(between_median))
+                m4.metric(f"{g1}-{g2}群間 ΔE00範囲", f"{format_num(between_min)} ～ {format_num(between_max)}")
                 m5, m6 = st.columns(2)
                 m5.metric(f"{g1}群内 ΔE00平均", format_num(within_g1_mean))
                 m6.metric(f"{g2}群内 ΔE00平均", format_num(within_g2_mean))
 
                 st.info(
                     "見方の基本：まず『群代表色どうしのΔE00』で平均的な差を見ます。"
-                    "次に『A-B群間の総当たりΔE00』で、群間色差の分布を確認します。"
+                    f"次に『{g1}-{g2}群間の総当たりΔE00』で、群間色差の分布を確認します。"
                     "群内ΔE00平均は、各群のばらつきの目安です。"
                 )
 
@@ -574,12 +618,12 @@ if uploaded_file is not None:
                 st.subheader("3) ΔE00の要約表")
                 st.dataframe(rounded_display(pairwise_summary_df), use_container_width=True, hide_index=True)
                 st.caption(
-                    "群内10通り・群間25通りの総当たりΔE00は記述用です。"
+                    "群内・群間の総当たりΔE00は記述用です。"
                     "同じサンプルが繰り返し使われるため、独立nとして推測統計には使いません。"
                 )
 
-                st.subheader("4) A-B群間の総当たりΔE00")
-                st.caption("A群の各サンプルとB群の各サンプルを総当たりで比較したΔE00です。")
+                st.subheader(f"4) {g1}-{g2}群間の総当たりΔE00")
+                st.caption(f"{g1}群の各サンプルと{g2}群の各サンプルを総当たりで比較したΔE00です。")
                 st.dataframe(
                     simplify_deltae_table(between, ["群1", "サンプル1", "群2", "サンプル2", "ΔE00"]),
                     use_container_width=True,
@@ -697,10 +741,10 @@ if uploaded_file is not None:
                         "群代表色どうしのΔE00": de00_group,
                         f"{g1}群内ΔE00平均": within_g1_mean,
                         f"{g2}群内ΔE00平均": within_g2_mean,
-                        "A-B群間総当たりΔE00平均": between_mean,
-                        "A-B群間総当たりΔE00中央値": between_median,
-                        "A-B群間ΔE00最小": between_min,
-                        "A-B群間ΔE00最大": between_max,
+                        f"{g1}-{g2}群間総当たりΔE00平均": between_mean,
+                        f"{g1}-{g2}群間総当たりΔE00中央値": between_median,
+                        f"{g1}-{g2}群間ΔE00最小": between_min,
+                        f"{g1}-{g2}群間ΔE00最大": between_max,
                     }
                 ])
 
@@ -708,7 +752,7 @@ if uploaded_file is not None:
                     "ΔE00主要結果": rounded_display(deltae_main_df),
                     "サンプル平均色座標": sample_means_display(sample_means),
                     "ΔE00要約": rounded_display(pairwise_summary_df),
-                    "A_B群間総当たりΔE00": simplify_deltae_table(between, ["群1", "サンプル1", "群2", "サンプル2", "ΔE00"]),
+                    "選択2群間総当たりΔE00": simplify_deltae_table(between, ["群1", "サンプル1", "群2", "サンプル2", "ΔE00"]),
                     f"{g1}群内ΔE00": simplify_deltae_table(within_g1, ["群", "サンプル1", "サンプル2", "ΔE00"]),
                     f"{g2}群内ΔE00": simplify_deltae_table(within_g2, ["群", "サンプル1", "サンプル2", "ΔE00"]),
                     "群代表色座標": group_summary_display(group_summary),
